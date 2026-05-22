@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Hand Gesture Recognizer</title>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --navy:    #0a1628;
+    --navy2:   #0f2040;
+    --blue:    #1e4fc4;
+    --accent:  #4f9eff;
+    --cyan:    #00d4ff;
+    --green:   #00d084;
+    --white:   #f8faff;
+    --muted:   #8a9ab8;
+    --border:  rgba(255,255,255,0.07);
+    --card:    rgba(255,255,255,0.04);
+  }
+  *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--navy);
+    color: var(--white);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── grid bg ── */
+  body::before {
+    content:'';
+    position:fixed; inset:0;
+    background-image:
+      linear-gradient(rgba(79,158,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(79,158,255,0.03) 1px, transparent 1px);
+    background-size: 48px 48px;
+    pointer-events:none; z-index:0;
+  }
+
+  /* ── orbs ── */
+  .orb {
+    position:fixed; border-radius:50%; pointer-events:none; z-index:0;
+    filter:blur(90px); animation: float 9s ease-in-out infinite;
+  }
+  .orb1 { width:480px;height:480px;background:rgba(30,79,196,0.14);top:-120px;right:-80px; }
+  .orb2 { width:340px;height:340px;background:rgba(0,212,255,0.07);bottom:10%;left:-80px;animation-delay:-4s; }
+  @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-24px)} }
+
+  /* ── layout ── */
+  .page { position:relative; z-index:1; max-width:1200px; margin:0 auto; padding:2rem 1.5rem 3rem; }
+
+  /* ── header ── */
+  header { text-align:center; margin-bottom:2.5rem; }
+  .badge {
+    display:inline-flex; align-items:center; gap:8px;
+    padding:.35rem 1rem;
+    background:rgba(79,158,255,0.1); border:1px solid rgba(79,158,255,0.2);
+    border-radius:100px; font-size:.75rem; color:var(--accent);
+    font-family:'Courier New',monospace; margin-bottom:1.2rem;
+  }
+  .badge-dot { width:6px;height:6px;background:var(--green);border-radius:50%;animation:pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(.8)} }
+  header h1 { font-size:clamp(1.8rem,4vw,2.8rem);font-weight:800;letter-spacing:-1px;line-height:1.1; }
+  header h1 span { color:var(--accent); }
+  header p { color:var(--muted);margin-top:.6rem;font-size:.95rem;font-weight:300; }
+
+  /* ── main grid ── */
+  .main-grid {
+    display:grid;
+    grid-template-columns: 1fr 340px;
+    gap:1.5rem;
+    align-items:start;
+  }
+  @media(max-width:900px){ .main-grid{grid-template-columns:1fr;} }
+
+  /* ── video container ── */
+  .video-wrap {
+    position:relative;
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:16px;
+    overflow:hidden;
+    aspect-ratio:4/3;
+  }
+  .video-wrap video { position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);opacity:0; }
+  .video-wrap canvas#output { position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1); }
+
+  /* ── video overlay UI ── */
+  .cam-status {
+    position:absolute; top:14px; left:14px;
+    display:flex; align-items:center; gap:8px;
+    background:rgba(10,22,40,.75); backdrop-filter:blur(8px);
+    border:1px solid var(--border); border-radius:100px;
+    padding:.3rem .9rem; font-size:.75rem; font-family:'Courier New',monospace;
+    z-index:10;
+  }
+  .cam-dot { width:7px;height:7px;border-radius:50%;background:var(--muted);transition:background .4s; }
+  .cam-dot.live { background:var(--green);animation:pulse 1.5s infinite; }
+
+  .fps-badge {
+    position:absolute; top:14px; right:14px;
+    background:rgba(10,22,40,.75); backdrop-filter:blur(8px);
+    border:1px solid var(--border); border-radius:8px;
+    padding:.3rem .75rem; font-size:.75rem; font-family:'Courier New',monospace;
+    color:var(--accent); z-index:10;
+  }
+
+  /* ── start overlay ── */
+  .start-overlay {
+    position:absolute; inset:0; z-index:20;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;
+    background:rgba(10,22,40,.85); backdrop-filter:blur(4px);
+    transition:opacity .5s;
+  }
+  .start-overlay.hidden { opacity:0; pointer-events:none; }
+  .start-icon { font-size:3.5rem; }
+  .start-overlay p { color:var(--muted);font-size:.9rem;text-align:center;max-width:260px;line-height:1.6; }
+  .btn-start {
+    padding:.75rem 2rem; background:var(--blue); border:none; border-radius:8px;
+    color:#fff; font-size:.9rem; font-weight:600; cursor:pointer;
+    transition:all .2s; font-family:inherit;
+  }
+  .btn-start:hover { background:var(--accent); transform:translateY(-2px); box-shadow:0 6px 20px rgba(79,158,255,.35); }
+
+  /* ── landmark count ── */
+  .landmark-badge {
+    position:absolute; bottom:14px; left:14px;
+    background:rgba(10,22,40,.75); backdrop-filter:blur(8px);
+    border:1px solid var(--border); border-radius:8px;
+    padding:.3rem .75rem; font-size:.75rem; font-family:'Courier New',monospace;
+    color:var(--cyan); z-index:10;
+  }
+
+  /* ── right panel ── */
+  .panel { display:flex; flex-direction:column; gap:1rem; }
+
+  .card {
+    background:var(--card); border:1px solid var(--border);
+    border-radius:14px; padding:1.25rem;
+    transition:border-color .3s;
+  }
+  .card:hover { border-color:rgba(79,158,255,.2); }
+  .card-label {
+    font-family:'Courier New',monospace; font-size:.68rem;
+    color:var(--accent); letter-spacing:1.5px; text-transform:uppercase;
+    margin-bottom:.9rem;
+  }
+
+  /* ── gesture display ── */
+  .gesture-main {
+    display:flex; align-items:center; gap:1rem;
+    margin-bottom:1rem;
+  }
+  .gesture-emoji {
+    font-size:3rem; line-height:1;
+    filter:drop-shadow(0 0 12px rgba(79,158,255,.4));
+    transition:all .3s cubic-bezier(.34,1.56,.64,1);
+    min-width:52px; text-align:center;
+  }
+  .gesture-emoji.pop { animation:pop .3s cubic-bezier(.34,1.56,.64,1); }
+  @keyframes pop { 0%{transform:scale(.6)} 60%{transform:scale(1.15)} 100%{transform:scale(1)} }
+  .gesture-name {
+    font-size:1.2rem; font-weight:700; color:var(--white);
+    letter-spacing:-.3px;
+  }
+  .gesture-sub { font-size:.78rem; color:var(--muted); margin-top:2px; }
+
+  /* confidence bar */
+  .conf-wrap { margin-top:.25rem; }
+  .conf-label { display:flex;justify-content:space-between;font-size:.72rem;color:var(--muted);margin-bottom:4px; }
+  .conf-track {
+    height:5px; background:rgba(255,255,255,.07); border-radius:3px; overflow:hidden;
+  }
+  .conf-fill {
+    height:100%; background:linear-gradient(90deg,var(--blue),var(--accent));
+    border-radius:3px; transition:width .35s ease; width:0%;
+  }
+
+  /* ── section scores ── */
+  .section-scores { display:flex;flex-direction:column;gap:.6rem; }
+  .score-row { display:flex;align-items:center;gap:.75rem; }
+  .score-key { font-size:.78rem;color:var(--muted);min-width:80px;font-family:'Courier New',monospace; }
+  .score-bar-wrap { flex:1;height:4px;background:rgba(255,255,255,.07);border-radius:2px;overflow:hidden; }
+  .score-bar { height:100%;border-radius:2px;transition:width .4s ease;background:var(--blue-light,#3b6ff5); }
+  .score-val { font-size:.78rem;color:var(--accent);font-family:'Courier New',monospace;min-width:30px;text-align:right; }
+
+  /* ── history ── */
+  .history-list { display:flex;flex-direction:column;gap:.5rem;max-height:180px;overflow-y:auto; }
+  .history-list::-webkit-scrollbar{width:2px;}
+  .history-list::-webkit-scrollbar-thumb{background:var(--blue);border-radius:1px;}
+  .history-item {
+    display:flex;align-items:center;gap:.6rem;
+    padding:.45rem .75rem;
+    background:rgba(255,255,255,.03); border:1px solid var(--border);
+    border-radius:8px; font-size:.8rem; animation:slideIn .25s ease;
+  }
+  @keyframes slideIn { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
+  .history-item .h-emoji { font-size:1.1rem; }
+  .history-item .h-name { color:var(--white);font-weight:500;flex:1; }
+  .history-item .h-conf { font-size:.72rem;color:var(--muted);font-family:'Courier New',monospace; }
+  .history-item .h-time { font-size:.7rem;color:var(--muted);font-family:'Courier New',monospace; }
+
+  /* ── gesture grid ── */
+  .gesture-grid {
+    display:grid; grid-template-columns:repeat(4,1fr); gap:.5rem;
+    margin-top:1.5rem;
+  }
+  .g-chip {
+    background:var(--card); border:1px solid var(--border);
+    border-radius:10px; padding:.6rem .4rem;
+    text-align:center; transition:all .2s;
+  }
+  .g-chip.active {
+    border-color:var(--accent);
+    background:rgba(79,158,255,.1);
+    transform:translateY(-2px);
+    box-shadow:0 4px 14px rgba(79,158,255,.2);
+  }
+  .g-chip .g-e { font-size:1.4rem; display:block; }
+  .g-chip .g-n { font-size:.65rem;color:var(--muted);margin-top:2px;display:block; }
+
+  /* ── stats row ── */
+  .stats-row { display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem;margin-top:1.5rem; }
+  .stat-box {
+    background:var(--card); border:1px solid var(--border);
+    border-radius:10px; padding:.85rem; text-align:center;
+  }
+  .stat-num { font-size:1.4rem;font-weight:800;color:var(--white);letter-spacing:-.5px; }
+  .stat-num span { color:var(--accent); }
+  .stat-lbl { font-size:.68rem;color:var(--muted);margin-top:2px; }
+
+  /* ── hand info ── */
+  .hand-chips { display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem; }
+  .hand-chip {
+    padding:.25rem .7rem; border-radius:100px;
+    font-size:.72rem; font-family:'Courier New',monospace;
+    background:rgba(79,158,255,.08); border:1px solid rgba(79,158,255,.2);
+    color:var(--accent); transition:all .3s;
+  }
+  .hand-chip.detected { background:rgba(0,208,132,.1);border-color:rgba(0,208,132,.3);color:var(--green); }
+
+  /* ── footer ── */
+  footer { text-align:center;margin-top:2.5rem;font-size:.78rem;color:var(--muted); }
+  footer a { color:var(--accent);text-decoration:none; }
+</style>
+</head>
+<body>
+
+<div class="orb orb1"></div>
+<div class="orb orb2"></div>
+
+<div class="page">
+
+  <!-- Header -->
+  <header>
+    <div class="badge"><span class="badge-dot"></span>MediaPipe · Real-time ML</div>
+    <h1>Hand Gesture <span>Recognizer</span></h1>
+    <p>21-landmark hand tracking · 9 gestures · runs 100% in your browser</p>
+  </header>
+
+  <!-- Main grid -->
+  <div class="main-grid">
+
+    <!-- Camera -->
+    <div>
+      <div class="video-wrap" id="videoWrap">
+        <video id="video" playsinline></video>
+        <canvas id="output"></canvas>
+
+        <div class="cam-status">
+          <div class="cam-dot" id="camDot"></div>
+          <span id="camLabel">camera off</span>
+        </div>
+        <div class="fps-badge" id="fpsBadge">-- fps</div>
+        <div class="landmark-badge" id="lmBadge">0 landmarks</div>
+
+        <div class="start-overlay" id="startOverlay">
+          <div class="start-icon">🖐</div>
+          <p>Webcam access required. Your video never leaves your device.</p>
+          <button class="btn-start" id="btnStart">Enable Camera</button>
+        </div>
+      </div>
+
+      <!-- Gesture chip grid -->
+      <div class="gesture-grid" id="gestureGrid">
+        <div class="g-chip" data-g="Thumbs Up">   <span class="g-e">👍</span><span class="g-n">thumbs up</span></div>
+        <div class="g-chip" data-g="Thumbs Down"> <span class="g-e">👎</span><span class="g-n">thumbs down</span></div>
+        <div class="g-chip" data-g="Peace">        <span class="g-e">✌️</span><span class="g-n">peace</span></div>
+        <div class="g-chip" data-g="Fist">         <span class="g-e">✊</span><span class="g-n">fist</span></div>
+        <div class="g-chip" data-g="Open Palm">    <span class="g-e">🖐</span><span class="g-n">open palm</span></div>
+        <div class="g-chip" data-g="Pointing">     <span class="g-e">👆</span><span class="g-n">pointing</span></div>
+        <div class="g-chip" data-g="Call Me">      <span class="g-e">🤙</span><span class="g-n">call me</span></div>
+        <div class="g-chip" data-g="Rock On">      <span class="g-e">🤘</span><span class="g-n">rock on</span></div>
+      </div>
+
+      <!-- Stats -->
+      <div class="stats-row">
+        <div class="stat-box"><div class="stat-num" id="totalCount">0</div><div class="stat-lbl">gestures detected</div></div>
+        <div class="stat-box"><div class="stat-num" id="topGesture">—</div><div class="stat-lbl">most frequent</div></div>
+        <div class="stat-box"><div class="stat-num" id="sessionTime">0<span>s</span></div><div class="stat-lbl">session time</div></div>
+      </div>
+    </div>
+
+    <!-- Right panel -->
+    <div class="panel">
+
+      <!-- Current gesture -->
+      <div class="card">
+        <div class="card-label">// current gesture</div>
+        <div class="gesture-main">
+          <div class="gesture-emoji" id="gestureEmoji">🖐</div>
+          <div>
+            <div class="gesture-name" id="gestureName">Waiting...</div>
+            <div class="gesture-sub" id="gestureSub">Show your hand to the camera</div>
+          </div>
+        </div>
+        <div class="conf-wrap">
+          <div class="conf-label"><span>confidence</span><span id="confPct">0%</span></div>
+          <div class="conf-track"><div class="conf-fill" id="confFill"></div></div>
+        </div>
+      </div>
+
+      <!-- Section breakdown -->
+      <div class="card">
+        <div class="card-label">// finger analysis</div>
+        <div class="section-scores" id="fingerAnalysis">
+          <div class="score-row">
+            <span class="score-key">thumb</span>
+            <div class="score-bar-wrap"><div class="score-bar" id="bar-thumb" style="width:0%;background:#4f9eff"></div></div>
+            <span class="score-val" id="val-thumb">—</span>
+          </div>
+          <div class="score-row">
+            <span class="score-key">index</span>
+            <div class="score-bar-wrap"><div class="score-bar" id="bar-index" style="width:0%;background:#00d4ff"></div></div>
+            <span class="score-val" id="val-index">—</span>
+          </div>
+          <div class="score-row">
+            <span class="score-key">middle</span>
+            <div class="score-bar-wrap"><div class="score-bar" id="bar-middle" style="width:0%;background:#4f9eff"></div></div>
+            <span class="score-val" id="val-middle">—</span>
+          </div>
+          <div class="score-row">
+            <span class="score-key">ring</span>
+            <div class="score-bar-wrap"><div class="score-bar" id="bar-ring" style="width:0%;background:#00d4ff"></div></div>
+            <span class="score-val" id="val-ring">—</span>
+          </div>
+          <div class="score-row">
+            <span class="score-key">pinky</span>
+            <div class="score-bar-wrap"><div class="score-bar" id="bar-pinky" style="width:0%;background:#4f9eff"></div></div>
+            <span class="score-val" id="val-pinky">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Hand info -->
+      <div class="card">
+        <div class="card-label">// hand info</div>
+        <div class="hand-chips">
+          <div class="hand-chip" id="chip-left">left hand</div>
+          <div class="hand-chip" id="chip-right">right hand</div>
+          <div class="hand-chip" id="chip-landmarks">21 pts</div>
+          <div class="hand-chip" id="chip-model">MediaPipe</div>
+        </div>
+      </div>
+
+      <!-- History -->
+      <div class="card">
+        <div class="card-label">// gesture history</div>
+        <div class="history-list" id="historyList">
+          <div style="color:var(--muted);font-size:.8rem;text-align:center;padding:.5rem 0;">No gestures yet</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <footer>
+    Built with <a href="https://mediapipe.dev" target="_blank">MediaPipe Hands</a> · 
+    21 landmarks · real-time browser inference · no data sent anywhere
+  </footer>
+</div>
+
+<script>
+// ── Gesture definitions ──
+const GESTURES = {
+  'Thumbs Up':   { emoji:'👍', desc:'thumb extended up, others curled' },
+  'Thumbs Down': { emoji:'👎', desc:'thumb extended down, others curled' },
+  'Peace':       { emoji:'✌️', desc:'index + middle extended' },
+  'Fist':        { emoji:'✊', desc:'all fingers curled' },
+  'Open Palm':   { emoji:'🖐', desc:'all fingers extended' },
+  'Pointing':    { emoji:'👆', desc:'only index extended' },
+  'Call Me':     { emoji:'🤙', desc:'thumb + pinky extended' },
+  'Rock On':     { emoji:'🤘', desc:'index + pinky extended' },
+};
+
+// ── State ──
+let currentGesture = null;
+let gestureHistory = [];
+let gestureCounts = {};
+let sessionStart = null;
+let frameCount = 0, fps = 0, lastFpsTime = 0;
+let smoothedLandmarks = null;
+const SMOOTH = 0.35;
+
+// ── Landmark indices ──
+const TIP  = { thumb:4, index:8, middle:12, ring:16, pinky:20 };
+const BASE = { thumb:2, index:5, middle:9,  ring:13, pinky:17 };
+const MCP  = { index:5, middle:9, ring:13, pinky:17 };
+const WRIST = 0;
+
+// ── Finger extension detection ──
+function isExtended(lm, finger) {
+  const tip = lm[TIP[finger]];
+  const base = lm[BASE[finger]];
+  if (finger === 'thumb') {
+    const mcp = lm[2], cmc = lm[1];
+    return Math.abs(tip.x - cmc.x) > Math.abs(base.x - cmc.x) * 0.9;
+  }
+  return tip.y < base.y - 0.02;
+}
+
+function fingerExtension(lm, finger) {
+  const tip = lm[TIP[finger]];
+  const base = lm[BASE[finger]];
+  const wrist = lm[WRIST];
+  if (finger === 'thumb') {
+    const cmc = lm[1];
+    const ext = Math.abs(tip.x - cmc.x) / (Math.abs(base.x - cmc.x) + 0.001);
+    return Math.min(1, Math.max(0, ext));
+  }
+  const range = Math.abs(wrist.y - base.y) + 0.001;
+  const val = (base.y - tip.y) / range;
+  return Math.min(1, Math.max(0, val + 0.15));
+}
+
+// ── Gesture classification ──
+function classifyGesture(lm) {
+  const ext = {
+    thumb:  isExtended(lm, 'thumb'),
+    index:  isExtended(lm, 'index'),
+    middle: isExtended(lm, 'middle'),
+    ring:   isExtended(lm, 'ring'),
+    pinky:  isExtended(lm, 'pinky'),
+  };
+
+  const thumbTip = lm[4], wrist = lm[0], indexMcp = lm[5];
+  const thumbUp = thumbTip.y < wrist.y - 0.12;
+  const thumbDown = thumbTip.y > wrist.y + 0.08;
+
+  const extCount = Object.values(ext).filter(Boolean).length;
+
+  // Fist
+  if (!ext.index && !ext.middle && !ext.ring && !ext.pinky) {
+    if (!ext.thumb) return { name:'Fist', confidence: 0.92 };
+    if (thumbUp)    return { name:'Thumbs Up', confidence: 0.91 };
+    if (thumbDown)  return { name:'Thumbs Down', confidence: 0.88 };
+  }
+  // Open palm
+  if (ext.index && ext.middle && ext.ring && ext.pinky && ext.thumb)
+    return { name:'Open Palm', confidence: 0.95 };
+  // Peace
+  if (ext.index && ext.middle && !ext.ring && !ext.pinky)
+    return { name:'Peace', confidence: 0.90 };
+  // Pointing
+  if (ext.index && !ext.middle && !ext.ring && !ext.pinky)
+    return { name:'Pointing', confidence: 0.93 };
+  // Call me
+  if (ext.thumb && !ext.index && !ext.middle && !ext.ring && ext.pinky)
+    return { name:'Call Me', confidence: 0.89 };
+  // Rock on
+  if (!ext.thumb && ext.index && !ext.middle && !ext.ring && ext.pinky)
+    return { name:'Rock On', confidence: 0.87 };
+
+  return { name:'Unknown', confidence: 0.4 };
+}
+
+// ── Smooth landmarks ──
+function smoothLandmarks(raw) {
+  if (!smoothedLandmarks) { smoothedLandmarks = raw.map(p=>({...p})); return smoothedLandmarks; }
+  for (let i=0;i<raw.length;i++) {
+    smoothedLandmarks[i].x += (raw[i].x - smoothedLandmarks[i].x) * SMOOTH;
+    smoothedLandmarks[i].y += (raw[i].y - smoothedLandmarks[i].y) * SMOOTH;
+    smoothedLandmarks[i].z += (raw[i].z - smoothedLandmarks[i].z) * SMOOTH;
+  }
+  return smoothedLandmarks;
+}
+
+// ── Dense fiber system state ──
+let veinTime = 0;
+
+// Pre-generate thousands of stable random seeds
+const RNG = new Float32Array(8000);
+for (let i=0;i<RNG.length;i++) RNG[i]=Math.random();
+const rng = i => RNG[i % RNG.length];
+
+// Multi-color palette — vivid, distinct
+const FIBER_COLORS = [
+  [0,   255, 120],  // neon green
+  [255, 50,  80],   // red
+  [50,  150, 255],  // blue
+  [255, 200, 0],    // yellow
+  [200, 0,   255],  // purple
+  [0,   255, 220],  // cyan
+  [255, 120, 0],    // orange
+  [255, 80,  200],  // pink
+  [80,  255, 80],   // lime
+  [100, 200, 255],  // sky
+];
+
+// Interpolate a point along the hand skeleton
+// Returns a point that lies somewhere on/near the hand surface
+function lerpLandmark(lm, a, b, t, w, h) {
+  return {
+    x: (lm[a].x + (lm[b].x - lm[a].x)*t) * w,
+    y: (lm[a].y + (lm[b].y - lm[a].y)*t) * h,
+  };
+}
+
+// Get a random point ON the hand mesh by picking a random bone segment
+// and interpolating along it with slight perpendicular scatter
+function randomHandPoint(lm, w, h, seed, scatter) {
+  const BONES = [
+    [0,1],[1,2],[2,3],[3,4],
+    [0,5],[5,6],[6,7],[7,8],
+    [0,9],[9,10],[10,11],[11,12],
+    [0,13],[13,14],[14,15],[15,16],
+    [0,17],[17,18],[18,19],[19,20],
+    [5,9],[9,13],[13,17],[5,17],
+    [0,9],[2,5],[4,8],[8,12],[12,16],[16,20],
+  ];
+  const bi = Math.floor(rng(seed) * BONES.length);
+  const [a,b] = BONES[bi];
+  const t = rng(seed+1);
+  const pt = lerpLandmark(lm, a, b, t, w, h);
+  // Add perpendicular scatter so lines fill the width of the finger, not just the centerline
+  const dx = (lm[b].x - lm[a].x)*w;
+  const dy = (lm[b].y - lm[a].y)*h;
+  const len = Math.sqrt(dx*dx+dy*dy) + 0.001;
+  const nx = -dy/len, ny = dx/len;
+  const s = scatter * (rng(seed+2)*2-1);
+  return { x: pt.x + nx*s, y: pt.y + ny*s };
+}
+
+// Draw a single ultra-thin hair/fiber between two hand points
+function drawFiber(ctx, x1,y1, x2,y2, color, alpha, pulse) {
+  const [r,g,b] = color;
+  const dx=x2-x1, dy=y2-y1;
+  const len=Math.sqrt(dx*dx+dy*dy);
+  if(len<2) return;
+
+  // Control points — slight organic curve
+  const nx=-dy/len, ny=dx/len;
+  const bow = (Math.random()-0.5)*len*0.35;
+  const cx1 = x1+dx*0.35+nx*bow, cy1 = y1+dy*0.35+ny*bow;
+  const cx2 = x1+dx*0.65-nx*bow*0.5, cy2 = y1+dy*0.65-ny*bow*0.5;
+
+  ctx.beginPath();
+  ctx.moveTo(x1,y1);
+  ctx.bezierCurveTo(cx1,cy1,cx2,cy2,x2,y2);
+  ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;
+  ctx.lineWidth = 0.4;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  // Occasional bright pulse highlight on this fiber
+  if(pulse > 0.02) {
+    ctx.beginPath();
+    ctx.moveTo(x1,y1);
+    ctx.bezierCurveTo(cx1,cy1,cx2,cy2,x2,y2);
+    ctx.strokeStyle = `rgba(255,255,255,${pulse*0.18})`;
+    ctx.lineWidth = 0.6;
+    ctx.stroke();
+  }
+}
+
+// ── Main draw — dense fiber flood ──
+function drawSkeleton(ctx, lm, w, h) {
+  veinTime += 0.022;
+  ctx.clearRect(0,0,w,h);
+
+  const globalPulse = 0.5 + Math.sin(veinTime * 2.8) * 0.5;
+  const scatter = Math.min(w,h) * 0.028; // finger-width scatter
+
+  // ── LAYER 1: Dense connection fibers (landmark to landmark, all pairs) ──
+  // Every landmark shoots fibers to nearby landmarks — floods the bones
+  const ALL_PAIRS = [
+    [0,1],[1,2],[2,3],[3,4],
+    [0,5],[5,6],[6,7],[7,8],
+    [0,9],[9,10],[10,11],[11,12],
+    [0,13],[13,14],[14,15],[15,16],
+    [0,17],[17,18],[18,19],[19,20],
+    [5,9],[9,13],[13,17],[5,17],
+    [0,5],[0,17],[4,8],[8,12],[12,16],
+    [1,5],[2,6],[3,7],[5,6],[6,10],[10,14],[14,18],
+  ];
+
+  ALL_PAIRS.forEach(([a,b], pi) => {
+    const ax=lm[a].x*w, ay=lm[a].y*h;
+    const bx=lm[b].x*w, by=lm[b].y*h;
+    const dx=bx-ax, dy=by-ay;
+    const len=Math.sqrt(dx*dx+dy*dy);
+    const nx=-dy/(len+.001), ny=dx/(len+.001);
+
+    // Draw 60 parallel hair-thin fibers per bone segment
+    for(let fi=0;fi<60;fi++) {
+      const seed = pi*200+fi*7;
+      const spread = (rng(seed)-0.5)*scatter*2.2;
+      const spreadB = (rng(seed+1)-0.5)*scatter*2.2;
+      const colorIdx = Math.floor(rng(seed+2)*FIBER_COLORS.length);
+      const color = FIBER_COLORS[colorIdx];
+      const alpha = 0.12 + rng(seed+3)*0.22;
+      const pulseFrac = rng(seed+4);
+      const pulse = pulseFrac < 0.08 ? globalPulse*0.5 : 0;
+
+      drawFiber(ctx,
+        ax+nx*spread, ay+ny*spread,
+        bx+nx*spreadB, by+ny*spreadB,
+        color, alpha, pulse
+      );
+    }
+  });
+
+  // ── LAYER 2: Random hand-to-hand fibers (cross the whole hand) ──
+  // These create the dense mesh fill between fingers and palm
+  for(let fi=0; fi<1200; fi++) {
+    const seed = 5000+fi*11;
+    const ptA = randomHandPoint(lm, w, h, seed,    scatter*1.4);
+    const ptB = randomHandPoint(lm, w, h, seed+100, scatter*1.4);
+    const colorIdx = Math.floor(rng(seed+3)*FIBER_COLORS.length);
+    const color = FIBER_COLORS[colorIdx];
+    const alpha = 0.06 + rng(seed+4)*0.14;
+    drawFiber(ctx, ptA.x,ptA.y, ptB.x,ptB.y, color, alpha, 0);
+  }
+
+  // ── LAYER 3: Star burst from every landmark ──
+  // Each of the 21 points shoots dense rays in all directions — fills gaps
+  lm.forEach((pt, li) => {
+    const px=pt.x*w, py=pt.y*h;
+    const rays = li===0 ? 80 : 40; // wrist gets more
+    for(let r=0;r<rays;r++) {
+      const seed = 2000+li*100+r*13;
+      const angle = rng(seed)*Math.PI*2;
+      const rayLen = scatter*(0.8 + rng(seed+1)*2.5);
+      const ex = px + Math.cos(angle)*rayLen;
+      const ey = py + Math.sin(angle)*rayLen;
+      const colorIdx = Math.floor(rng(seed+2)*FIBER_COLORS.length);
+      const color = FIBER_COLORS[colorIdx];
+      const alpha = 0.08 + rng(seed+3)*0.18;
+      const pulse = rng(seed+4)<0.06 ? globalPulse*0.6 : 0;
+      drawFiber(ctx, px,py, ex,ey, color, alpha, pulse);
+    }
+  });
+
+  // ── LAYER 4: Fingertip explosion — densest area ──
+  [4,8,12,16,20].forEach((tipIdx,fi) => {
+    const tx=lm[tipIdx].x*w, ty=lm[tipIdx].y*h;
+    const prev=lm[tipIdx-1];
+    const mainAngle=Math.atan2(ty-prev.y*h, tx-prev.x*w);
+
+    // 120 rays per fingertip in a cone
+    for(let r=0;r<120;r++) {
+      const seed=4000+fi*200+r*7;
+      const spread=(rng(seed)-0.5)*Math.PI*1.8;
+      const rayLen=scatter*(0.5+rng(seed+1)*2.2);
+      const ex=tx+Math.cos(mainAngle+spread)*rayLen;
+      const ey=ty+Math.sin(mainAngle+spread)*rayLen;
+      const colorIdx=Math.floor(rng(seed+2)*FIBER_COLORS.length);
+      const color=FIBER_COLORS[colorIdx];
+      const alpha=0.1+rng(seed+3)*0.25;
+      const pulse=rng(seed+4)<0.1?globalPulse*0.7:0;
+      drawFiber(ctx,tx,ty,ex,ey,color,alpha,pulse);
+    }
+
+    // Pulsing core dot
+    const cr = 3+Math.sin(veinTime*5+fi)*1.5;
+    ctx.beginPath();
+    ctx.arc(tx,ty,cr,0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,255,255,${0.6+globalPulse*0.4})`;
+    ctx.fill();
+  });
+
+  // ── LAYER 5: Traveling pulse sparks along bones ──
+  ALL_PAIRS.slice(0,20).forEach(([a,b],pi) => {
+    const t=(veinTime*0.6 + pi*0.17) % 1.0;
+    const px=(lm[a].x+(lm[b].x-lm[a].x)*t)*w;
+    const py=(lm[a].y+(lm[b].y-lm[a].y)*t)*h;
+    const colorIdx=(pi*3)%FIBER_COLORS.length;
+    const [r,g,bc]=FIBER_COLORS[colorIdx];
+    ctx.beginPath();
+    ctx.arc(px,py,2.5,0,Math.PI*2);
+    ctx.fillStyle=`rgba(${r},${g},${bc},${0.5+globalPulse*0.5})`;
+    ctx.fill();
+    // glow ring
+    ctx.beginPath();
+    ctx.arc(px,py,5,0,Math.PI*2);
+    ctx.strokeStyle=`rgba(${r},${g},${bc},${0.15+globalPulse*0.15})`;
+    ctx.lineWidth=1;
+    ctx.stroke();
+  });
+}
+
+// ── Update UI ──
+function updateUI(gesture, lm, handedness) {
+  const g = GESTURES[gesture.name] || { emoji:'❓', desc:'unrecognized gesture' };
+
+  // Gesture card
+  const emojiEl = document.getElementById('gestureEmoji');
+  const prevEmoji = emojiEl.textContent;
+  if (g.emoji !== prevEmoji) {
+    emojiEl.textContent = g.emoji;
+    emojiEl.classList.remove('pop');
+    void emojiEl.offsetWidth;
+    emojiEl.classList.add('pop');
+  }
+  document.getElementById('gestureName').textContent = gesture.name;
+  document.getElementById('gestureSub').textContent = g.desc;
+  const pct = Math.round(gesture.confidence * 100);
+  document.getElementById('confPct').textContent = pct + '%';
+  document.getElementById('confFill').style.width = pct + '%';
+
+  // Finger bars
+  const fingers = ['thumb','index','middle','ring','pinky'];
+  fingers.forEach(f => {
+    const val = fingerExtension(lm, f);
+    const pctF = Math.round(val*100);
+    document.getElementById('bar-'+f).style.width = pctF + '%';
+    document.getElementById('val-'+f).textContent = pctF + '%';
+  });
+
+  // Hand chips
+  document.getElementById('chip-left').classList.toggle('detected', handedness==='Left');
+  document.getElementById('chip-right').classList.toggle('detected', handedness==='Right');
+  document.getElementById('chip-landmarks').classList.add('detected');
+
+  // Gesture grid
+  document.querySelectorAll('.g-chip').forEach(el => {
+    el.classList.toggle('active', el.dataset.g === gesture.name);
+  });
+
+  // History (dedupe consecutive)
+  if (gesture.name !== 'Unknown') {
+    const last = gestureHistory[0];
+    if (!last || last.name !== gesture.name) {
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+      gestureHistory.unshift({ name:gesture.name, emoji:g.emoji, confidence:pct, time:timeStr });
+      if (gestureHistory.length > 12) gestureHistory.pop();
+      gestureCounts[gesture.name] = (gestureCounts[gesture.name]||0) + 1;
+      renderHistory();
+      updateStats();
+    }
+  }
+}
+
+function renderHistory() {
+  const list = document.getElementById('historyList');
+  if (!gestureHistory.length) return;
+  list.innerHTML = gestureHistory.map(h => `
+    <div class="history-item">
+      <span class="h-emoji">${h.emoji}</span>
+      <span class="h-name">${h.name}</span>
+      <span class="h-conf">${h.confidence}%</span>
+      <span class="h-time">${h.time}</span>
+    </div>`).join('');
+}
+
+function updateStats() {
+  document.getElementById('totalCount').textContent = gestureHistory.length;
+  const top = Object.entries(gestureCounts).sort((a,b)=>b[1]-a[1])[0];
+  document.getElementById('topGesture').textContent = top ? GESTURES[top[0]]?.emoji || top[0] : '—';
+}
+
+function updateNoHand() {
+  document.getElementById('gestureName').textContent = 'No hand detected';
+  document.getElementById('gestureSub').textContent = 'Show your hand to the camera';
+  document.getElementById('gestureEmoji').textContent = '🖐';
+  document.getElementById('confFill').style.width = '0%';
+  document.getElementById('confPct').textContent = '0%';
+  document.getElementById('lmBadge').textContent = '0 landmarks';
+  document.getElementById('chip-left').classList.remove('detected');
+  document.getElementById('chip-right').classList.remove('detected');
+  document.getElementById('chip-landmarks').classList.remove('detected');
+  document.querySelectorAll('.g-chip').forEach(el=>el.classList.remove('active'));
+  ['thumb','index','middle','ring','pinky'].forEach(f=>{
+    document.getElementById('bar-'+f).style.width='0%';
+    document.getElementById('val-'+f).textContent='—';
+  });
+  smoothedLandmarks = null;
+  const canvas = document.getElementById('output');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+}
+
+// ── FPS ──
+function calcFps(now) {
+  frameCount++;
+  if (now - lastFpsTime >= 1000) {
+    fps = frameCount;
+    frameCount = 0;
+    lastFpsTime = now;
+    document.getElementById('fpsBadge').textContent = fps + ' fps';
+  }
+}
+
+// ── Session timer ──
+function startSessionTimer() {
+  sessionStart = Date.now();
+  setInterval(()=>{
+    if (!sessionStart) return;
+    const s = Math.floor((Date.now()-sessionStart)/1000);
+    document.getElementById('sessionTime').innerHTML = s + '<span>s</span>';
+  }, 1000);
+}
+
+// ── MediaPipe setup ──
+document.getElementById('btnStart').addEventListener('click', async () => {
+  document.getElementById('startOverlay').classList.add('hidden');
+  document.getElementById('camDot').classList.add('live');
+  document.getElementById('camLabel').textContent = 'initializing...';
+
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('output');
+  const wrap = document.getElementById('videoWrap');
+
+  // Resize canvas to match wrapper
+  const ro = new ResizeObserver(()=>{
+    canvas.width = wrap.offsetWidth;
+    canvas.height = wrap.offsetHeight;
+  });
+  ro.observe(wrap);
+  canvas.width = wrap.offsetWidth;
+  canvas.height = wrap.offsetHeight;
+
+  const hands = new Hands({locateFile: f =>
+    `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+  });
+
+  hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence: 0.6,
+  });
+
+  hands.onResults(results => {
+    const w = canvas.width, h = canvas.height;
+    const ctx = canvas.getContext('2d');
+    const now = performance.now();
+    calcFps(now);
+
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+      const raw = results.multiHandLandmarks[0];
+      const handedness = results.multiHandedness[0]?.label || 'Unknown';
+      const lm = smoothLandmarks(raw);
+
+      drawSkeleton(ctx, lm, w, h);
+
+      const gesture = classifyGesture(lm);
+      document.getElementById('lmBadge').textContent = '21 landmarks · ' + handedness;
+      updateUI(gesture, lm, handedness);
+    } else {
+      updateNoHand();
+    }
+  });
+
+  const camera = new Camera(video, {
+    onFrame: async () => { await hands.send({ image: video }); },
+    width: 1280, height: 720,
+  });
+
+  await camera.start();
+  video.style.opacity = '1';
+  document.getElementById('camLabel').textContent = 'live';
+  startSessionTimer();
+  lastFpsTime = performance.now();
+});
+</script>
+</body>
+</html>
